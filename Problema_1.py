@@ -3,7 +3,7 @@ import customtkinter as ctk
 from tkinter import filedialog
 
 
-# ===============CONFIGURACIÓN ===============
+# ===============CONFIGURACIoN ===============
 
 ctk.set_appearance_mode("light")
 ctk.set_default_color_theme("blue")
@@ -85,7 +85,7 @@ def seleccionar_archivo():
 
         n = int(contenido[0].strip())
 
-        # Validar que haya suficientes líneas
+        # Validar que haya suficientes lineas
         if len(contenido) < 2 * n + 1:
             print("Error: el archivo no tiene suficientes filas.")
             return
@@ -237,7 +237,7 @@ def continuar():
 #procedimiento para resolver el rompecabezas 
     #ALGORITMO: IDA*
     
-# Conectamos el botón inicial
+# Conectamos el boton inicial
 boton.configure(command=seleccionar_archivo)
 
 ventana.mainloop()
