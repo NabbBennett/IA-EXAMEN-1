@@ -1,9 +1,14 @@
 import tkinter as tk
 import customtkinter as ctk
 from tkinter import filedialog
+from tkinter import messagebox
 import threading
 import time
+import csv
 from collections import deque
+from pathlib import Path
+from matplotlib.figure import Figure
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
 
 ctk.set_appearance_mode("light")
@@ -106,6 +111,8 @@ def seleccionar_archivo():
             if len(fila) != n:
                 print("Error: una fila no coincide con el tamaño n.")
                 return
+
+        ventana.archivo_actual = Path(archivo).name
 
     except (ValueError, IndexError) as e:
         print(f"Error al leer el archivo: {e}")
@@ -645,12 +652,25 @@ def _buscar_con_umbral(camino, g, umbral, meta, meta_ser, contador, tt,
 # VISTA DE CALCULO Y RESULTADO
 # ==============================================================
 
-def comparar_heuristicas(inicio, final):
+def comparar_heuristicas(inicio, final, actualizar_estado=None):
     resultados = []
     for nombre, funcion in HEURISTICAS.items():
+        if actualizar_estado:
+            actualizar_estado(nombre, "Trabajando...", None, None)
         t0 = time.time()
         camino, nodos = ida_estrella(
-            inicio, final, funcion_heuristica=funcion
+            inicio,
+            final,
+            funcion_heuristica=funcion,
+            callback_progreso=(
+                lambda nodos_actuales, iteracion, umbral,
+                nombre_actual=nombre: actualizar_estado(
+                    nombre_actual,
+                    "Trabajando...",
+                    iteracion,
+                    nodos_actuales
+                )
+            ) if actualizar_estado else None
         )
         resultados.append({
             "nombre": nombre,
@@ -659,6 +679,8 @@ def comparar_heuristicas(inicio, final):
             "tiempo": time.time() - t0,
             "camino": camino,
         })
+        if actualizar_estado:
+            actualizar_estado(nombre, "Finalizado", None, nodos)
     return resultados
 
 
@@ -667,7 +689,7 @@ def calcular_heuristica(n, inicio, final):
     boton_regresar.place_forget()
     boton_continuar.place_forget()
 
-    titulo.configure(text="Calculo f(n) = g(n) + h(n)  [IDA*]")
+    titulo.configure(text="Calculando solucion con IDA*...")
     titulo.place(relx=0.5, rely=0.10, anchor="center")
 
     if not es_resoluble(inicio, final):
@@ -696,18 +718,70 @@ def calcular_heuristica(n, inicio, final):
     label_estado.place(relx=0.5, rely=0.5, anchor="center")
     widgets_datos.append(label_estado)
 
-    def progreso(nodos, iter_ida, umbral):
-        ventana.after(0, lambda: label_estado.configure(
-            text=(
-                f"Calculando con IDA*...\n"
-                f"Iteracion: {iter_ida}\n"
-                f"Umbral actual: {umbral}\n"
-                f"Nodos expandidos: {nodos}"
-            )
-        ))
+    panel_estados = ctk.CTkFrame(
+        master=ventana,
+        width=650,
+        height=230,
+        fg_color="#ffffff",
+        corner_radius=15
+    )
+    panel_estados.place(relx=0.5, rely=0.58, anchor="center")
+    panel_estados.pack_propagate(False)
+    widgets_datos.append(panel_estados)
+
+    ctk.CTkLabel(
+        panel_estados,
+        text="Estado de las heurísticas",
+        font=subtitulos,
+        text_color="#3a3d81",
+        fg_color="transparent"
+    ).pack(pady=(10, 5))
+
+    etiquetas_estado = {}
+    for nombre in HEURISTICAS:
+        etiqueta = ctk.CTkLabel(
+            panel_estados,
+            text=f"{nombre}: Pendiente",
+            font=("Roboto", 13),
+            text_color="#3a3d81",
+            fg_color="transparent",
+            anchor="w"
+        )
+        etiqueta.pack(fill="x", padx=20, pady=2)
+        etiquetas_estado[nombre] = etiqueta
+
+    def actualizar_estado(nombre, estado, iteracion, nodos):
+        def actualizar():
+            if not etiquetas_estado[nombre].winfo_exists():
+                return
+            if estado == "Trabajando...":
+                detalle = (
+                    f" | Iteración: {iteracion} | Nodos: {nodos}"
+                    if iteracion is not None else ""
+                )
+                etiquetas_estado[nombre].configure(
+                    text=f"{nombre}: {estado}{detalle}",
+                    text_color="#d68910"
+                )
+                label_estado.configure(
+                    text=f"Procesando: {nombre}\n"
+                         f"Iteración: {iteracion or '-'}\n"
+                         f"Nodos expandidos: {nodos or 0}"
+                )
+            else:
+                etiquetas_estado[nombre].configure(
+                    text=f"{nombre}: {estado} | Nodos: {nodos}",
+                    text_color="#27803b"
+                )
+
+        ventana.after(0, actualizar)
 
     def resolver():
-        resultados = comparar_heuristicas(inicio, final)
+        resultados = comparar_heuristicas(
+            inicio,
+            final,
+            actualizar_estado=actualizar_estado
+        )
         ventana.after(0, lambda: mostrar_resultado(
             n, inicio, final, resultados
         ))
@@ -717,6 +791,11 @@ def calcular_heuristica(n, inicio, final):
 
 def mostrar_resultado(n, inicio, final, resultados):
     limpiar_widgets_datos()
+    guardar_resultados(
+        resultados,
+        n,
+        getattr(ventana, "archivo_actual", "archivo_sin_nombre.txt")
+    )
 
     resultados_validos = [r for r in resultados if r["camino"] is not None]
     if not resultados_validos:
@@ -1096,12 +1175,257 @@ def mostrar_estadisticas(n, camino, resultados=None):
             )
 
     boton_regresar.place(relx=0.5, rely=0.92, anchor="center")
-
+    #Continuar a ver las estadisticas y graficas de los resultados
+    boton_graficas = ctk.CTkButton(
+        master=ventana,
+        text="Ver Gráficas",
+        command=lambda: generar_graficas(n)
+    )
+    boton_graficas.place(relx=0.5, rely=0.96, anchor="center")
+    widgets_datos.append(boton_graficas)
 # ==============================================================
-# ESTADISTICAS (generar )
+# ESTADISTICAS (generar grafica 1: Resultado de ejercicios resueltos, 2: Tiempo de ejecucion, 3:Pasos para resolver el rompecabezas)
 # ==============================================================
 
+def obtener_carpeta_resultados(tamaño):
+    carpeta = Path("resultados") / f"{tamaño}x{tamaño}"
+    carpeta.mkdir(parents=True, exist_ok=True)
+    return carpeta
 
+
+def guardar_resultados(resultados, tamaño, archivo_entrada):
+    archivo = obtener_carpeta_resultados(tamaño) / "resultados.txt"
+    # Se agregan los resultados para conservar todos los rompecabezas
+    # ejecutados del mismo tamaño.
+    with open(archivo, "a", newline="", encoding="utf-8") as f:
+        escritor = csv.writer(f)
+        id_ejecucion = time.time_ns()
+        for resultado in resultados:
+            nombre = resultado["nombre"]
+            f_inicial = resultado["f_inicial"]
+            nodos = resultado["nodos"]
+            tiempo = resultado["tiempo"]
+            pasos = (
+                len(resultado["camino"]) - 1
+                if resultado["camino"] else "SIN SOLUCION"
+            )
+            escritor.writerow([
+                nombre,
+                f_inicial,
+                nodos,
+                tiempo,
+                pasos,
+                id_ejecucion,
+                archivo_entrada
+            ])
+
+
+def leer_resultados(archivo="resultados.txt"):
+    resultados = []
+    with open(archivo, "r", newline="", encoding="utf-8") as f:
+        lector = csv.reader(f)
+        for numero_linea, fila in enumerate(lector, start=1):
+            if not fila:
+                continue
+            if len(fila) not in (5, 6, 7):
+                raise ValueError(
+                    f"La línea {numero_linea} de {archivo} debe tener "
+                    "5, 6 o 7 columnas."
+                )
+            nombre, f_inicial, nodos, tiempo, pasos = (
+                valor.strip() for valor in fila[:5]
+            )
+            try:
+                resultados.append({
+                    "nombre": nombre,
+                    "f_inicial": float(f_inicial),
+                    "nodos": int(nodos),
+                    "tiempo": float(tiempo),
+                    "pasos": (
+                        None
+                        if pasos.upper() == "SIN SOLUCION"
+                        else int(pasos)
+                    ),
+                    "id_ejecucion": fila[5].strip() if len(fila) == 6 else None,
+                    "archivo": fila[6].strip() if len(fila) == 7 else None,
+                })
+            except ValueError as error:
+                raise ValueError(
+                    f"Datos inválidos en la línea {numero_linea} de {archivo}."
+                ) from error
+    return resultados
+
+
+def generar_graficas(tamaño):
+    limpiar_widgets_datos()
+    contenedor = ctk.CTkFrame(
+        master=ventana,
+        width=880,
+        height=770,
+        fg_color="#e6eafd",
+        corner_radius=0
+    )
+    contenedor.place(relx=0.5, rely=0.02, anchor="n")
+    contenedor.pack_propagate(False)
+    widgets_datos.append(contenedor)
+    carpeta = obtener_carpeta_resultados(tamaño)
+    archivo = carpeta / "resultados.txt"
+
+    try:
+        resultados = leer_resultados(archivo)
+    except FileNotFoundError:
+        contenedor.destroy()
+        messagebox.showwarning(
+            "Sin resultados",
+            f"No existe el archivo de resultados: {archivo}"
+        )
+        return
+    except ValueError as error:
+        contenedor.destroy()
+        messagebox.showerror("Resultados inválidos", str(error))
+        return
+
+    if not resultados:
+        contenedor.destroy()
+        messagebox.showwarning(
+            "Sin resultados",
+            "El archivo de resultados no contiene datos."
+        )
+        return
+
+    resueltos = [resultado for resultado in resultados
+                 if resultado["pasos"] is not None]
+    no_resueltos = len(resultados) - len(resueltos)
+    total_resultados = len(resultados)
+
+    color_fondo = "#e6eafd"
+    figura = Figure(figsize=(8.8, 7.7), dpi=100, facecolor=color_fondo)
+    eje_resueltos = figura.add_subplot(311)
+    eje_resueltos.set_facecolor(color_fondo)
+
+    # Grafica 1: porcentaje global de resultados resueltos.
+    if resueltos:
+        eje_resueltos.pie(
+            [len(resueltos), no_resueltos],
+            labels=["Resueltos", "Sin solución"],
+            autopct="%1.1f%%",
+            startangle=90,
+            colors=["#4caf50", "#e57373"],
+            wedgeprops={"linewidth": 1, "edgecolor": "white"}
+        )
+    else:
+        eje_resueltos.pie(
+            [no_resueltos],
+            labels=["Sin solución"],
+            autopct="%1.1f%%",
+            colors=["#e57373"]
+        )
+    eje_resueltos.set_title(
+        f"Resultado general ({total_resultados} ejecuciones)",
+        pad=10
+    )
+
+    # Agrupa tiempo y pasos por archivo y heurística. El pastel anterior
+    # permanece global, pero estas métricas no mezclan los rompecabezas.
+    grupos = {}
+    for resultado in resultados:
+        nombre_archivo = resultado["archivo"] or "Ejecución anterior"
+        grupos.setdefault(nombre_archivo, {})
+        grupos[nombre_archivo].setdefault(resultado["nombre"], []).append(
+            resultado
+        )
+
+    archivos = list(grupos)
+    heuristicas = list(dict.fromkeys(
+        resultado["nombre"] for resultado in resultados
+    ))
+    ancho_barra = 0.8 / max(1, len(heuristicas))
+    posiciones = list(range(len(archivos)))
+
+    def promedios_por_archivo(campo):
+        promedios = []
+        for nombre_archivo in archivos:
+            valores = []
+            for nombre_heuristica in heuristicas:
+                datos = [
+                    resultado[campo]
+                    for resultado in grupos[nombre_archivo].get(
+                        nombre_heuristica, []
+                    )
+                    if resultado["pasos"] is not None
+                ]
+                valores.append(
+                    sum(datos) / len(datos) if datos else 0
+                )
+            promedios.append(valores)
+        return promedios
+
+    tiempos = promedios_por_archivo("tiempo")
+    eje_tiempo = figura.add_subplot(312)
+    eje_tiempo.set_facecolor(color_fondo)
+    for indice, nombre_heuristica in enumerate(heuristicas):
+        eje_tiempo.bar(
+            [
+                posicion + indice * ancho_barra
+                for posicion in posiciones
+            ],
+            [fila[indice] for fila in tiempos],
+            width=ancho_barra,
+            label=nombre_heuristica
+        )
+    eje_tiempo.set_title("Tiempo promedio por archivo y heurística")
+    eje_tiempo.set_ylabel("Tiempo (s)")
+    eje_tiempo.set_ylim(bottom=0)
+    eje_tiempo.set_xticks([
+        posicion + ancho_barra * (len(heuristicas) - 1) / 2
+        for posicion in posiciones
+    ])
+    eje_tiempo.set_xticklabels(archivos, rotation=35, ha="right")
+    eje_tiempo.legend(fontsize=7)
+
+    pasos = promedios_por_archivo("pasos")
+    eje_pasos = figura.add_subplot(313)
+    eje_pasos.set_facecolor(color_fondo)
+    for indice, nombre_heuristica in enumerate(heuristicas):
+        eje_pasos.bar(
+            [
+                posicion + indice * ancho_barra
+                for posicion in posiciones
+            ],
+            [fila[indice] for fila in pasos],
+            width=ancho_barra,
+            label=nombre_heuristica
+        )
+    eje_pasos.set_title("Número promedio de pasos por archivo y heurística")
+    eje_pasos.set_ylabel("Número de pasos")
+    eje_pasos.set_ylim(bottom=0)
+    eje_pasos.set_xticks([
+        posicion + ancho_barra * (len(heuristicas) - 1) / 2
+        for posicion in posiciones
+    ])
+    eje_pasos.set_xticklabels(archivos, rotation=35, ha="right")
+    eje_pasos.legend(fontsize=7)
+
+    figura.subplots_adjust(
+        left=0.10,
+        right=0.98,
+        top=0.97,
+        bottom=0.09,
+        hspace=0.90
+    )
+    figura.savefig(
+        carpeta / "graficas_resultados.png",
+        facecolor=color_fondo
+    )
+
+    lienzo = FigureCanvasTkAgg(figura, master=contenedor)
+    lienzo.get_tk_widget().configure(
+        background=color_fondo,
+        highlightthickness=0
+    )
+    lienzo.draw()
+    lienzo.get_tk_widget().pack(fill="both", expand=True)
+    
 # ==============================================================
 # INICIO
 # ==============================================================
