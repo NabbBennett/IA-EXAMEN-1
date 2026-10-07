@@ -5,6 +5,7 @@ from tkinter import messagebox
 import threading
 import time
 import csv
+import heapq
 from collections import deque
 from pathlib import Path
 from matplotlib.figure import Figure
@@ -492,11 +493,180 @@ def heuristica_corner_tile(estado, meta):
     return h
 
 
+def _notificar_progreso(callback, nodos, iteracion, umbral):
+    if callback and nodos % 100000 == 0:
+        callback(nodos, iteracion, umbral)
+
+
+def busqueda_a_estrella(inicio, meta, funcion_heuristica=heuristica,
+                        callback_progreso=None, limite_segundos=60):
+    inicio_ser = serializar(inicio)
+    meta_ser = serializar(meta)
+    limite = time.monotonic() + limite_segundos
+    pendientes = []
+    contador_orden = 0
+    nodos = 0
+    heapq.heappush(
+        pendientes,
+        (funcion_heuristica(inicio, meta), 0, contador_orden,
+         inicio, [inicio])
+    )
+    mejores_costos = {inicio_ser: 0}
+
+    while pendientes:
+        if time.monotonic() >= limite:
+            raise LimiteTiempoAlcanzado(nodos)
+        _, costo, _, estado, camino = heapq.heappop(pendientes)
+        estado_ser = serializar(estado)
+        if estado_ser == meta_ser:
+            return camino, nodos
+        for vecino in vecinos(estado):
+            vecino_ser = serializar(vecino)
+            nuevo_costo = costo + 1
+            if nuevo_costo >= mejores_costos.get(vecino_ser, float("inf")):
+                continue
+            mejores_costos[vecino_ser] = nuevo_costo
+            nodos += 1
+            contador_orden += 1
+            prioridad = nuevo_costo + funcion_heuristica(vecino, meta)
+            heapq.heappush(
+                pendientes,
+                (
+                    prioridad,
+                    nuevo_costo,
+                    contador_orden,
+                    vecino,
+                    camino + [vecino]
+                )
+            )
+            _notificar_progreso(
+                callback_progreso, nodos, 1, prioridad
+            )
+    return None, nodos
+
+
+def busqueda_greedy(inicio, meta, funcion_heuristica=heuristica,
+                    callback_progreso=None, limite_segundos=60):
+    inicio_ser = serializar(inicio)
+    meta_ser = serializar(meta)
+    limite = time.monotonic() + limite_segundos
+    pendientes = []
+    contador_orden = 0
+    nodos = 0
+    heapq.heappush(
+        pendientes,
+        (funcion_heuristica(inicio, meta), contador_orden, inicio, [inicio])
+    )
+    visitados = {inicio_ser}
+
+    while pendientes:
+        if time.monotonic() >= limite:
+            raise LimiteTiempoAlcanzado(nodos)
+        _, _, estado, camino = heapq.heappop(pendientes)
+        if serializar(estado) == meta_ser:
+            return camino, nodos
+        for vecino in vecinos(estado):
+            vecino_ser = serializar(vecino)
+            if vecino_ser in visitados:
+                continue
+            visitados.add(vecino_ser)
+            nodos += 1
+            contador_orden += 1
+            heapq.heappush(
+                pendientes,
+                (
+                    funcion_heuristica(vecino, meta),
+                    contador_orden,
+                    vecino,
+                    camino + [vecino]
+                )
+            )
+            _notificar_progreso(
+                callback_progreso, nodos, 1,
+                funcion_heuristica(vecino, meta)
+            )
+    return None, nodos
+
+
+def busqueda_beam(inicio, meta, funcion_heuristica=heuristica,
+                  callback_progreso=None, limite_segundos=60,
+                  ancho=1000):
+    limite = time.monotonic() + limite_segundos
+    meta_ser = serializar(meta)
+    frontera = [(inicio, [inicio])]
+    visitados = {serializar(inicio)}
+    nodos = 0
+    nivel = 0
+
+    while frontera:
+        if time.monotonic() >= limite:
+            raise LimiteTiempoAlcanzado(nodos)
+        candidatos = []
+        nivel += 1
+        for estado, camino in frontera:
+            if serializar(estado) == meta_ser:
+                return camino, nodos
+            for vecino in vecinos(estado):
+                vecino_ser = serializar(vecino)
+                if vecino_ser in visitados:
+                    continue
+                visitados.add(vecino_ser)
+                nodos += 1
+                candidatos.append((
+                    funcion_heuristica(vecino, meta),
+                    vecino,
+                    camino + [vecino]
+                ))
+                _notificar_progreso(
+                    callback_progreso, nodos, nivel,
+                    candidatos[-1][0]
+                )
+        candidatos.sort(key=lambda elemento: elemento[0])
+        frontera = [
+            (estado, camino)
+            for _, estado, camino in candidatos[:ancho]
+        ]
+    return None, nodos
+
+
+def weighted_ida(inicio, meta, funcion_heuristica=heuristica,
+                 callback_progreso=None, limite_segundos=60,
+                 peso=1.5):
+    return ida_estrella(
+        inicio,
+        meta,
+        funcion_heuristica=lambda estado, objetivo: (
+            peso * funcion_heuristica(estado, objetivo)
+        ),
+        callback_progreso=callback_progreso,
+        limite_segundos=limite_segundos
+    )
+
+
+def _crear_busqueda_ida(funcion_heuristica):
+    def ejecutar(inicio, meta, callback_progreso=None,
+                 limite_segundos=60):
+        return ida_estrella(
+            inicio,
+            meta,
+            funcion_heuristica=funcion_heuristica,
+            callback_progreso=callback_progreso,
+            limite_segundos=limite_segundos
+        )
+
+    return ejecutar
+
+
 HEURISTICAS = {
-    "Manhattan + conflicto lineal": heuristica,
-    "Walking Distance": heuristica_walking_distance,
-    "Inversion Distance": heuristica_inversion_distance,
-    "Corner Tile": heuristica_corner_tile,
+    "Manhattan + conflicto lineal": _crear_busqueda_ida(heuristica),
+    "Walking Distance": _crear_busqueda_ida(
+        heuristica_walking_distance
+    ),
+    "Corner Tile": _crear_busqueda_ida(heuristica_corner_tile),
+    "Weighted IDA*": weighted_ida,
+    "A* con prioridad": busqueda_a_estrella,
+    "Beam Search": busqueda_beam,
+    "Greedy Best-First Search": busqueda_greedy,
 }
 
 
@@ -564,8 +734,14 @@ def es_resoluble(inicio, meta):
 # IDA*  (Iterative Deepening A*)
 # ==============================================================
 
+class LimiteTiempoAlcanzado(Exception):
+    def __init__(self, nodos):
+        super().__init__()
+        self.nodos = nodos
+
+
 def ida_estrella(inicio, meta, funcion_heuristica=heuristica,
-                 callback_progreso=None):
+                 callback_progreso=None, limite_segundos=60):
     inicio_ser = serializar(inicio)
     meta_ser = serializar(meta)
 
@@ -573,6 +749,7 @@ def ida_estrella(inicio, meta, funcion_heuristica=heuristica,
     camino = [inicio]
     iteraciones = [0]
     iteracion_ida = 0
+    limite = time.monotonic() + limite_segundos
 
     while True:
         iteracion_ida += 1
@@ -588,7 +765,8 @@ def ida_estrella(inicio, meta, funcion_heuristica=heuristica,
             meta_ser=meta_ser,
             contador=iteraciones,
             tt=tt,
-            funcion_heuristica=funcion_heuristica
+            funcion_heuristica=funcion_heuristica,
+            limite=limite
         )
 
         if resultado[0] == "ENCONTRADO":
@@ -601,7 +779,9 @@ def ida_estrella(inicio, meta, funcion_heuristica=heuristica,
 
 
 def _buscar_con_umbral(camino, g, umbral, meta, meta_ser, contador, tt,
-                       funcion_heuristica):
+                       funcion_heuristica, limite=None):
+    if limite is not None and time.monotonic() >= limite:
+        raise LimiteTiempoAlcanzado(contador[0])
     estado = camino[-1]
     estado_ser = serializar(estado)
 
@@ -634,7 +814,7 @@ def _buscar_con_umbral(camino, g, umbral, meta, meta_ser, contador, tt,
 
         resultado, _ = _buscar_con_umbral(
             camino, g + 1, umbral, meta, meta_ser, contador, tt,
-            funcion_heuristica
+            funcion_heuristica, limite
         )
 
         if resultado == "ENCONTRADO":
@@ -658,29 +838,34 @@ def comparar_heuristicas(inicio, final, actualizar_estado=None):
         if actualizar_estado:
             actualizar_estado(nombre, "Trabajando...", None, None)
         t0 = time.time()
-        camino, nodos = ida_estrella(
-            inicio,
-            final,
-            funcion_heuristica=funcion,
-            callback_progreso=(
-                lambda nodos_actuales, iteracion, umbral,
-                nombre_actual=nombre: actualizar_estado(
-                    nombre_actual,
-                    "Trabajando...",
-                    iteracion,
-                    nodos_actuales
-                )
-            ) if actualizar_estado else None
-        )
+        try:
+            camino, nodos = funcion(
+                inicio,
+                final,
+                callback_progreso=(
+                    lambda nodos_actuales, iteracion, umbral,
+                    nombre_actual=nombre: actualizar_estado(
+                        nombre_actual,
+                        "Trabajando...",
+                        iteracion,
+                        nodos_actuales
+                    )
+                ) if actualizar_estado else None
+            )
+            estado_final = "Finalizado"
+        except LimiteTiempoAlcanzado as error:
+            camino, nodos = None, error.nodos
+            estado_final = "Límite alcanzado"
         resultados.append({
             "nombre": nombre,
-            "f_inicial": funcion(inicio, final),
+            "f_inicial": heuristica(inicio, final),
             "nodos": nodos,
             "tiempo": time.time() - t0,
             "camino": camino,
+            "estado": estado_final,
         })
         if actualizar_estado:
-            actualizar_estado(nombre, "Finalizado", None, nodos)
+            actualizar_estado(nombre, estado_final, None, nodos)
     return resultados
 
 
