@@ -93,7 +93,7 @@ def seleccionar_archivo():
         return
 
     try:
-        with open(archivo, 'r') as f:
+        with open(archivo, 'r', encoding='utf-8-sig') as f:
             contenido = f.read().strip().splitlines()
 
         n = int(contenido[0].strip())
@@ -223,6 +223,7 @@ def dibujar_matriz(parent, matriz, titulo_texto, columna):
             )
             label_num.place(relx=0.5, rely=0.5, anchor="center")
 
+
 def limpiar_widgets_datos():
     for w in widgets_datos:
         try:
@@ -254,8 +255,9 @@ def continuar():
     n, inicio, final = ventana.datos
     calcular_heuristica(n, inicio, final)
 
+
 # ==============================================================
-# HEURISTICAS
+# HEURISTICAS  (5 en total)
 # ==============================================================
 
 def heuristica_manhattan(estado, meta):
@@ -274,6 +276,7 @@ def heuristica_manhattan(estado, meta):
                 fi, fj = pos_meta[v]
                 h += abs(i - fi) + abs(j - fj)
     return h
+
 
 def conflicto_lineal(estado, meta):
     n = len(estado)
@@ -324,9 +327,12 @@ def conflicto_lineal(estado, meta):
     return total
 
 
-def heuristica(estado, meta):
+def heuristica_manhattan_lc(estado, meta):
+    """Heurística 1: Manhattan + Linear Conflict (vista en clase)."""
     return heuristica_manhattan(estado, meta) + conflicto_lineal(estado, meta)
 
+
+# ---------- Walking Distance (Heurística 2 - nueva) ----------
 
 def _tabla_walking_distance(n, meta, por_columnas=False):
     if n > 4:
@@ -422,31 +428,17 @@ def _walking_distance_direccion(estado, meta, por_columnas):
 
 
 def heuristica_walking_distance(estado, meta):
+    """Heurística 2: Walking Distance (nueva)."""
     return (
         _walking_distance_direccion(estado, meta, False)
         + _walking_distance_direccion(estado, meta, True)
     )
 
 
-def heuristica_inversion_distance(estado, meta):
-    n = len(estado)
-    orden_meta = {
-        meta[i][j]: i * n + j
-        for i in range(n)
-        for j in range(n)
-        if meta[i][j] != 0
-    }
-    secuencia = [
-        orden_meta[estado[i][j]]
-        for i in range(n)
-        for j in range(n)
-        if estado[i][j] != 0
-    ]
-    inversiones = contar_inversiones(secuencia, n)
-    return (inversiones + (2 * n - 2)) // (2 * n - 1)
-
+# ---------- Corner Tile (Heurística 3 - nueva) ----------
 
 def heuristica_corner_tile(estado, meta):
+    """Heurística 3: Corner Tile (nueva)."""
     n = len(estado)
     posiciones = {
         estado[i][j]: (i, j)
@@ -493,181 +485,108 @@ def heuristica_corner_tile(estado, meta):
     return h
 
 
-def _notificar_progreso(callback, nodos, iteracion, umbral):
-    if callback and nodos % 100000 == 0:
-        callback(nodos, iteracion, umbral)
+# ---------- Inversion Distance (Heurística 4 - nueva) ----------
+
+def heuristica_inversion_distance(estado, meta):
+    """
+    Heurística 4: Inversion Distance (nueva).
+    Cuenta inversiones en cada fila y columna respecto al orden meta.
+    Cada inversión cuesta al menos 2 movimientos.
+    """
+    n = len(estado)
+
+    pos_meta = {}
+    for i in range(n):
+        for j in range(n):
+            v = meta[i][j]
+            if v != 0:
+                pos_meta[v] = (i, j)
+
+    h = 0
+
+    # Inversiones por FILA
+    for i in range(n):
+        fichas = []
+        for j in range(n):
+            v = estado[i][j]
+            if v != 0 and pos_meta[v][0] == i:
+                fichas.append((j, pos_meta[v][1]))
+        for a in range(len(fichas)):
+            for b in range(a + 1, len(fichas)):
+                if fichas[a][1] > fichas[b][1]:
+                    h += 2
+
+    # Inversiones por COLUMNA
+    for j in range(n):
+        fichas = []
+        for i in range(n):
+            v = estado[i][j]
+            if v != 0 and pos_meta[v][1] == j:
+                fichas.append((i, pos_meta[v][0]))
+        for a in range(len(fichas)):
+            for b in range(a + 1, len(fichas)):
+                if fichas[a][1] > fichas[b][1]:
+                    h += 2
+
+    return h
 
 
-def busqueda_a_estrella(inicio, meta, funcion_heuristica=heuristica,
-                        callback_progreso=None, limite_segundos=60):
-    inicio_ser = serializar(inicio)
-    meta_ser = serializar(meta)
-    limite = time.monotonic() + limite_segundos
-    pendientes = []
-    contador_orden = 0
-    nodos = 0
-    heapq.heappush(
-        pendientes,
-        (funcion_heuristica(inicio, meta), 0, contador_orden,
-         inicio, [inicio])
+# ---------- Last Moves (Heurística 5 - nueva) ----------
+
+def heuristica_last_moves(estado, meta):
+    """
+    Heurística 5: Last Moves (nueva).
+    Penaliza fichas adyacentes al hueco meta que están fuera de lugar.
+    """
+    n = len(estado)
+    pos_meta = {}
+    pos_actual = {}
+    hueco_meta = None
+    for i in range(n):
+        for j in range(n):
+            v = meta[i][j]
+            if v == 0:
+                hueco_meta = (i, j)
+            else:
+                pos_meta[v] = (i, j)
+            w = estado[i][j]
+            if w != 0:
+                pos_actual[w] = (i, j)
+
+    if hueco_meta is None:
+        return 0
+
+    hi, hj = hueco_meta
+    ultimas = []
+    for di, dj in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+        ni, nj = hi + di, hj + dj
+        if 0 <= ni < n and 0 <= nj < n:
+            v = meta[ni][nj]
+            if v != 0:
+                ultimas.append(v)
+
+    h = 0
+    for v in ultimas:
+        if v in pos_actual:
+            ai, aj = pos_actual[v]
+            mi, mj = pos_meta[v]
+            d = abs(ai - mi) + abs(aj - mj)
+            if d > 0:
+                h += 1
+    return h
+
+
+# ---------- Combinaciones ----------
+
+def heuristica_combinada_max(estado, meta):
+    """Combinación con max() → mantiene admisibilidad si cada una es admisible."""
+    return max(
+        heuristica_manhattan_lc(estado, meta),
+        heuristica_walking_distance(estado, meta),
+        heuristica_inversion_distance(estado, meta),
+        heuristica_corner_tile(estado, meta),
+        heuristica_last_moves(estado, meta),
     )
-    mejores_costos = {inicio_ser: 0}
-
-    while pendientes:
-        if time.monotonic() >= limite:
-            raise LimiteTiempoAlcanzado(nodos)
-        _, costo, _, estado, camino = heapq.heappop(pendientes)
-        estado_ser = serializar(estado)
-        if estado_ser == meta_ser:
-            return camino, nodos
-        for vecino in vecinos(estado):
-            vecino_ser = serializar(vecino)
-            nuevo_costo = costo + 1
-            if nuevo_costo >= mejores_costos.get(vecino_ser, float("inf")):
-                continue
-            mejores_costos[vecino_ser] = nuevo_costo
-            nodos += 1
-            contador_orden += 1
-            prioridad = nuevo_costo + funcion_heuristica(vecino, meta)
-            heapq.heappush(
-                pendientes,
-                (
-                    prioridad,
-                    nuevo_costo,
-                    contador_orden,
-                    vecino,
-                    camino + [vecino]
-                )
-            )
-            _notificar_progreso(
-                callback_progreso, nodos, 1, prioridad
-            )
-    return None, nodos
-
-
-def busqueda_greedy(inicio, meta, funcion_heuristica=heuristica,
-                    callback_progreso=None, limite_segundos=60):
-    inicio_ser = serializar(inicio)
-    meta_ser = serializar(meta)
-    limite = time.monotonic() + limite_segundos
-    pendientes = []
-    contador_orden = 0
-    nodos = 0
-    heapq.heappush(
-        pendientes,
-        (funcion_heuristica(inicio, meta), contador_orden, inicio, [inicio])
-    )
-    visitados = {inicio_ser}
-
-    while pendientes:
-        if time.monotonic() >= limite:
-            raise LimiteTiempoAlcanzado(nodos)
-        _, _, estado, camino = heapq.heappop(pendientes)
-        if serializar(estado) == meta_ser:
-            return camino, nodos
-        for vecino in vecinos(estado):
-            vecino_ser = serializar(vecino)
-            if vecino_ser in visitados:
-                continue
-            visitados.add(vecino_ser)
-            nodos += 1
-            contador_orden += 1
-            heapq.heappush(
-                pendientes,
-                (
-                    funcion_heuristica(vecino, meta),
-                    contador_orden,
-                    vecino,
-                    camino + [vecino]
-                )
-            )
-            _notificar_progreso(
-                callback_progreso, nodos, 1,
-                funcion_heuristica(vecino, meta)
-            )
-    return None, nodos
-
-
-def busqueda_beam(inicio, meta, funcion_heuristica=heuristica,
-                  callback_progreso=None, limite_segundos=60,
-                  ancho=1000):
-    limite = time.monotonic() + limite_segundos
-    meta_ser = serializar(meta)
-    frontera = [(inicio, [inicio])]
-    visitados = {serializar(inicio)}
-    nodos = 0
-    nivel = 0
-
-    while frontera:
-        if time.monotonic() >= limite:
-            raise LimiteTiempoAlcanzado(nodos)
-        candidatos = []
-        nivel += 1
-        for estado, camino in frontera:
-            if serializar(estado) == meta_ser:
-                return camino, nodos
-            for vecino in vecinos(estado):
-                vecino_ser = serializar(vecino)
-                if vecino_ser in visitados:
-                    continue
-                visitados.add(vecino_ser)
-                nodos += 1
-                candidatos.append((
-                    funcion_heuristica(vecino, meta),
-                    vecino,
-                    camino + [vecino]
-                ))
-                _notificar_progreso(
-                    callback_progreso, nodos, nivel,
-                    candidatos[-1][0]
-                )
-        candidatos.sort(key=lambda elemento: elemento[0])
-        frontera = [
-            (estado, camino)
-            for _, estado, camino in candidatos[:ancho]
-        ]
-    return None, nodos
-
-
-def weighted_ida(inicio, meta, funcion_heuristica=heuristica,
-                 callback_progreso=None, limite_segundos=60,
-                 peso=1.5):
-    return ida_estrella(
-        inicio,
-        meta,
-        funcion_heuristica=lambda estado, objetivo: (
-            peso * funcion_heuristica(estado, objetivo)
-        ),
-        callback_progreso=callback_progreso,
-        limite_segundos=limite_segundos
-    )
-
-
-def _crear_busqueda_ida(funcion_heuristica):
-    def ejecutar(inicio, meta, callback_progreso=None,
-                 limite_segundos=60):
-        return ida_estrella(
-            inicio,
-            meta,
-            funcion_heuristica=funcion_heuristica,
-            callback_progreso=callback_progreso,
-            limite_segundos=limite_segundos
-        )
-
-    return ejecutar
-
-
-HEURISTICAS = {
-    "Manhattan + conflicto lineal": _crear_busqueda_ida(heuristica),
-    "Walking Distance": _crear_busqueda_ida(
-        heuristica_walking_distance
-    ),
-    "Corner Tile": _crear_busqueda_ida(heuristica_corner_tile),
-    "Weighted IDA*": weighted_ida,
-    "A* con prioridad": busqueda_a_estrella,
-    "Beam Search": busqueda_beam,
-    "Greedy Best-First Search": busqueda_greedy,
-}
 
 
 # ==============================================================
@@ -731,26 +650,24 @@ def es_resoluble(inicio, meta):
 
 
 # ==============================================================
-# IDA*  (Iterative Deepening A*)
+# BUSQUEDAS
 # ==============================================================
 
-class LimiteTiempoAlcanzado(Exception):
-    def __init__(self, nodos):
-        super().__init__()
-        self.nodos = nodos
+def _notificar_progreso(callback, nodos, iteracion, umbral):
+    if callback and nodos % 100000 == 0:
+        callback(nodos, iteracion, umbral)
 
 
-def ida_estrella(inicio, meta, funcion_heuristica=heuristica,
-                 callback_progreso=None, limite_segundos=60):
+def ida_estrella(inicio, meta, funcion_heuristica=heuristica_manhattan_lc,
+                 callback_progreso=None):
     inicio_ser = serializar(inicio)
     meta_ser = serializar(meta)
 
     umbral = funcion_heuristica(inicio, meta)
     camino = [inicio]
+    camino_set = {inicio_ser}
     iteraciones = [0]
     iteracion_ida = 0
-    limite = time.monotonic() + limite_segundos
-
     while True:
         iteracion_ida += 1
         if callback_progreso:
@@ -759,14 +676,14 @@ def ida_estrella(inicio, meta, funcion_heuristica=heuristica,
         tt = {}
         resultado = _buscar_con_umbral(
             camino=camino,
+            camino_set=camino_set,
             g=0,
             umbral=umbral,
             meta=meta,
             meta_ser=meta_ser,
             contador=iteraciones,
             tt=tt,
-            funcion_heuristica=funcion_heuristica,
-            limite=limite
+            funcion_heuristica=funcion_heuristica
         )
 
         if resultado[0] == "ENCONTRADO":
@@ -778,10 +695,9 @@ def ida_estrella(inicio, meta, funcion_heuristica=heuristica,
         umbral = resultado[0]
 
 
-def _buscar_con_umbral(camino, g, umbral, meta, meta_ser, contador, tt,
-                       funcion_heuristica, limite=None):
-    if limite is not None and time.monotonic() >= limite:
-        raise LimiteTiempoAlcanzado(contador[0])
+def _buscar_con_umbral(camino, camino_set, g, umbral, meta, meta_ser,
+                       contador, tt, funcion_heuristica):
+
     estado = camino[-1]
     estado_ser = serializar(estado)
 
@@ -802,19 +718,23 @@ def _buscar_con_umbral(camino, g, umbral, meta, meta_ser, contador, tt,
     minimo = float('inf')
 
     for vecino in vecinos(estado):
-        if len(camino) >= 2 and serializar(vecino) == serializar(camino[-2]):
+        vecino_ser = serializar(vecino)
+
+        # Evitar deshacer el movimiento anterior
+        if len(camino) >= 2 and vecino_ser == serializar(camino[-2]):
             continue
 
-        vecino_ser = serializar(vecino)
-        if any(serializar(c) == vecino_ser for c in camino):
+        # Evitar ciclos usando el set (O(1))
+        if vecino_ser in camino_set:
             continue
 
         camino.append(vecino)
+        camino_set.add(vecino_ser)
         contador[0] += 1
 
         resultado, _ = _buscar_con_umbral(
-            camino, g + 1, umbral, meta, meta_ser, contador, tt,
-            funcion_heuristica, limite
+            camino, camino_set, g + 1, umbral, meta, meta_ser,
+            contador, tt, funcion_heuristica
         )
 
         if resultado == "ENCONTRADO":
@@ -824,12 +744,179 @@ def _buscar_con_umbral(camino, g, umbral, meta, meta_ser, contador, tt,
             minimo = resultado
 
         camino.pop()
+        camino_set.discard(vecino_ser)
 
     return (minimo, None)
 
 
+def busqueda_a_estrella(inicio, meta, funcion_heuristica=heuristica_manhattan_lc,
+                        callback_progreso=None):
+    inicio_ser = serializar(inicio)
+    meta_ser = serializar(meta)
+    pendientes = []
+    contador_orden = 0
+    nodos = 0
+    heapq.heappush(
+        pendientes,
+        (funcion_heuristica(inicio, meta), 0, contador_orden,
+         inicio, [inicio])
+    )
+    mejores_costos = {inicio_ser: 0}
+
+    while pendientes:
+        _, costo, _, estado, camino = heapq.heappop(pendientes)
+        estado_ser = serializar(estado)
+        if estado_ser == meta_ser:
+            return camino, nodos
+        for vecino in vecinos(estado):
+            vecino_ser = serializar(vecino)
+            nuevo_costo = costo + 1
+            if nuevo_costo >= mejores_costos.get(vecino_ser, float("inf")):
+                continue
+            mejores_costos[vecino_ser] = nuevo_costo
+            nodos += 1
+            contador_orden += 1
+            prioridad = nuevo_costo + funcion_heuristica(vecino, meta)
+            heapq.heappush(
+                pendientes,
+                (
+                    prioridad,
+                    nuevo_costo,
+                    contador_orden,
+                    vecino,
+                    camino + [vecino]
+                )
+            )
+            _notificar_progreso(callback_progreso, nodos, 1, prioridad)
+    return None, nodos
+
+
+def busqueda_greedy(inicio, meta, funcion_heuristica=heuristica_manhattan_lc,
+                    callback_progreso=None):
+    inicio_ser = serializar(inicio)
+    meta_ser = serializar(meta)
+    pendientes = []
+    contador_orden = 0
+    nodos = 0
+    heapq.heappush(
+        pendientes,
+        (funcion_heuristica(inicio, meta), contador_orden, inicio, [inicio])
+    )
+    visitados = {inicio_ser}
+
+    while pendientes:
+        _, _, estado, camino = heapq.heappop(pendientes)
+        if serializar(estado) == meta_ser:
+            return camino, nodos
+        for vecino in vecinos(estado):
+            vecino_ser = serializar(vecino)
+            if vecino_ser in visitados:
+                continue
+            visitados.add(vecino_ser)
+            nodos += 1
+            contador_orden += 1
+            heapq.heappush(
+                pendientes,
+                (
+                    funcion_heuristica(vecino, meta),
+                    contador_orden,
+                    vecino,
+                    camino + [vecino]
+                )
+            )
+            _notificar_progreso(
+                callback_progreso, nodos, 1,
+                funcion_heuristica(vecino, meta)
+            )
+    return None, nodos
+
+
+def busqueda_beam(inicio, meta, funcion_heuristica=heuristica_manhattan_lc,
+                  callback_progreso=None,
+                  ancho=1000):
+    meta_ser = serializar(meta)
+    frontera = [(inicio, [inicio])]
+    visitados = {serializar(inicio)}
+    nodos = 0
+    nivel = 0
+
+    while frontera:
+        candidatos = []
+        nivel += 1
+        for estado, camino in frontera:
+            if serializar(estado) == meta_ser:
+                return camino, nodos
+            for vecino in vecinos(estado):
+                vecino_ser = serializar(vecino)
+                if vecino_ser in visitados:
+                    continue
+                visitados.add(vecino_ser)
+                nodos += 1
+                candidatos.append((
+                    funcion_heuristica(vecino, meta),
+                    vecino,
+                    camino + [vecino]
+                ))
+                _notificar_progreso(
+                    callback_progreso, nodos, nivel,
+                    candidatos[-1][0]
+                )
+        candidatos.sort(key=lambda elemento: elemento[0])
+        frontera = [
+            (estado, camino)
+            for _, estado, camino in candidatos[:ancho]
+        ]
+    return None, nodos
+
+
+def weighted_ida(inicio, meta, funcion_heuristica=heuristica_manhattan_lc,
+                 callback_progreso=None,
+                 peso=1.5):
+    return ida_estrella(
+        inicio,
+        meta,
+        funcion_heuristica=lambda estado, objetivo: (
+            peso * funcion_heuristica(estado, objetivo)
+        ),
+        callback_progreso=callback_progreso
+    )
+
+
 # ==============================================================
-# VISTA DE CALCULO Y RESULTADO
+# REGISTRO DE HEURISTICAS (5) Y ALGORITMOS (4)
+# ==============================================================
+
+def _crear_busqueda_ida(funcion_heuristica):
+    def ejecutar(inicio, meta, callback_progreso=None):
+        return ida_estrella(
+            inicio,
+            meta,
+            funcion_heuristica=funcion_heuristica,
+            callback_progreso=callback_progreso
+        )
+    return ejecutar
+
+
+# --- 5 HEURISTICAS (cada una corre con IDA*) ---
+HEURISTICAS = {
+    "Manhattan + Conflicto Lineal": _crear_busqueda_ida(heuristica_manhattan_lc),
+    "Walking Distance":             _crear_busqueda_ida(heuristica_walking_distance),
+    "Corner Tile":                  _crear_busqueda_ida(heuristica_corner_tile),
+    "Inversion Distance":           _crear_busqueda_ida(heuristica_inversion_distance),
+    "Last Moves":                   _crear_busqueda_ida(heuristica_last_moves),
+}
+
+# --- 4 ALGORITMOS (opcional, para tabla secundaria) ---
+ALGORITMOS = {
+    "Weighted IDA*":      weighted_ida,
+    "A* con prioridad":   busqueda_a_estrella,
+    "Beam Search":        busqueda_beam,
+    "Greedy Best-First":  busqueda_greedy,
+}
+
+
+# ==============================================================
+# COMPARACION DE HEURISTICAS
 # ==============================================================
 
 def comparar_heuristicas(inicio, final, actualizar_estado=None):
@@ -838,27 +925,23 @@ def comparar_heuristicas(inicio, final, actualizar_estado=None):
         if actualizar_estado:
             actualizar_estado(nombre, "Trabajando...", None, None)
         t0 = time.time()
-        try:
-            camino, nodos = funcion(
-                inicio,
-                final,
-                callback_progreso=(
-                    lambda nodos_actuales, iteracion, umbral,
-                    nombre_actual=nombre: actualizar_estado(
-                        nombre_actual,
-                        "Trabajando...",
-                        iteracion,
-                        nodos_actuales
-                    )
-                ) if actualizar_estado else None
-            )
-            estado_final = "Finalizado"
-        except LimiteTiempoAlcanzado as error:
-            camino, nodos = None, error.nodos
-            estado_final = "Límite alcanzado"
+        camino, nodos = funcion(
+            inicio,
+            final,
+            callback_progreso=(
+                lambda nodos_actuales, iteracion, umbral,
+                nombre_actual=nombre: actualizar_estado(
+                    nombre_actual,
+                    "Trabajando...",
+                    iteracion,
+                    nodos_actuales
+                )
+            ) if actualizar_estado else None
+        )
+        estado_final = "Finalizado"
         resultados.append({
             "nombre": nombre,
-            "f_inicial": heuristica(inicio, final),
+            "f_inicial": heuristica_manhattan_lc(inicio, final),
             "nodos": nodos,
             "tiempo": time.time() - t0,
             "camino": camino,
@@ -868,6 +951,10 @@ def comparar_heuristicas(inicio, final, actualizar_estado=None):
             actualizar_estado(nombre, estado_final, None, nodos)
     return resultados
 
+
+# ==============================================================
+# VISTA DE CALCULO Y RESULTADO
+# ==============================================================
 
 def calcular_heuristica(n, inicio, final):
     limpiar_widgets_datos()
@@ -906,7 +993,7 @@ def calcular_heuristica(n, inicio, final):
     panel_estados = ctk.CTkFrame(
         master=ventana,
         width=650,
-        height=230,
+        height=250,
         fg_color="#ffffff",
         corner_radius=15
     )
@@ -1026,7 +1113,7 @@ def mostrar_resultado(n, inicio, final, resultados):
     label = ctk.CTkLabel(
         master=ventana,
         text="\n".join(lineas),
-        font=("Courier New", 14),
+        font=("Courier New", 13),
         text_color="#3a3d81",
         fg_color="transparent",
         justify="center"
@@ -1044,7 +1131,7 @@ def mostrar_resultado(n, inicio, final, resultados):
         text_color="#ffffff",
         command=lambda: animar_solucion(n, camino)
     )
-    boton_animar.place(relx=0.5, rely=0.6, anchor="center")
+    boton_animar.place(relx=0.5, rely=0.65, anchor="center")
     widgets_datos.append(boton_animar)
 
     boton_regresar.place(relx=0.5, rely=0.8, anchor="center")
@@ -1171,7 +1258,6 @@ def animar_solucion(n, camino):
 
 
 def detener_y_mostrar(n, camino):
-    """Detiene la animación y muestra las estadísticas con el tablero final."""
     ventana.animacion_activa = False
     mostrar_estadisticas(
         n,
@@ -1181,7 +1267,7 @@ def detener_y_mostrar(n, camino):
 
 
 # ==============================================================
-# PASOS (u, d, l, r)
+# PASOS:  U, D, L, R  (mayúsculas, separadas por coma)
 # ==============================================================
 
 def mostrar_pasos(camino):
@@ -1193,16 +1279,17 @@ def mostrar_pasos(camino):
         i1, j1 = encontrar_cero(estado_actual)
 
         if i1 == i0 - 1 and j1 == j0:
-            pasos.append('u')
+            pasos.append('U')
         elif i1 == i0 + 1 and j1 == j0:
-            pasos.append('d')
+            pasos.append('D')
         elif i1 == i0 and j1 == j0 - 1:
-            pasos.append('l')
+            pasos.append('L')
         elif i1 == i0 and j1 == j0 + 1:
-            pasos.append('r')
+            pasos.append('R')
 
+    # Salida a consola con el formato pedido: U,D,L,R separadas por coma
     print("Pasos para resolver el rompecabezas:")
-    print(" -> ".join(pasos))
+    print(",".join(pasos))
     print(f"Numero total de pasos: {len(pasos)}")
 
 
@@ -1259,8 +1346,6 @@ def mostrar_estadisticas(n, camino, resultados=None):
             )
             celda.grid(row=i + 1, column=j, padx=pad, pady=pad)
 
-    # ---------- Tabla de estadísticas por algoritmo ----------
-    
     if not resultados:
         resultados = getattr(ventana, "resultados_algoritmos", [])
 
@@ -1312,7 +1397,7 @@ def mostrar_estadisticas(n, camino, resultados=None):
     ).grid(row=0, column=0, columnspan=6, padx=10, pady=(15, 8))
 
     encabezados = (
-        "Algoritmo",
+        "Heurística",
         "F inicial",
         "Nodos",
         "Pasos",
@@ -1360,7 +1445,6 @@ def mostrar_estadisticas(n, camino, resultados=None):
             )
 
     boton_regresar.place(relx=0.5, rely=0.92, anchor="center")
-    #Continuar a ver las estadisticas y graficas de los resultados
     boton_graficas = ctk.CTkButton(
         master=ventana,
         text="Ver Gráficas",
@@ -1368,8 +1452,10 @@ def mostrar_estadisticas(n, camino, resultados=None):
     )
     boton_graficas.place(relx=0.5, rely=0.96, anchor="center")
     widgets_datos.append(boton_graficas)
+
+
 # ==============================================================
-# ESTADISTICAS (generar grafica 1: Resultado de ejercicios resueltos, 2: Tiempo de ejecucion, 3:Pasos para resolver el rompecabezas)
+# GUARDAR / LEER RESULTADOS
 # ==============================================================
 
 def obtener_carpeta_resultados(tamaño):
@@ -1380,8 +1466,6 @@ def obtener_carpeta_resultados(tamaño):
 
 def guardar_resultados(resultados, tamaño, archivo_entrada):
     archivo = obtener_carpeta_resultados(tamaño) / "resultados.txt"
-    # Se agregan los resultados para conservar todos los rompecabezas
-    # ejecutados del mismo tamaño.
     with open(archivo, "a", newline="", encoding="utf-8") as f:
         escritor = csv.writer(f)
         id_ejecucion = time.time_ns()
@@ -1441,6 +1525,10 @@ def leer_resultados(archivo="resultados.txt"):
     return resultados
 
 
+# ==============================================================
+# GRAFICAS
+# ==============================================================
+
 def generar_graficas(tamaño):
     limpiar_widgets_datos()
     contenedor = ctk.CTkFrame(
@@ -1488,7 +1576,6 @@ def generar_graficas(tamaño):
     eje_resueltos = figura.add_subplot(311)
     eje_resueltos.set_facecolor(color_fondo)
 
-    # Grafica 1: porcentaje global de resultados resueltos.
     if resueltos:
         eje_resueltos.pie(
             [len(resueltos), no_resueltos],
@@ -1510,8 +1597,6 @@ def generar_graficas(tamaño):
         pad=10
     )
 
-    # Agrupa tiempo y pasos por archivo y heurística. El pastel anterior
-    # permanece global, pero estas métricas no mezclan los rompecabezas.
     grupos = {}
     for resultado in resultados:
         nombre_archivo = resultado["archivo"] or "Ejecución anterior"
@@ -1550,10 +1635,7 @@ def generar_graficas(tamaño):
     eje_tiempo.set_facecolor(color_fondo)
     for indice, nombre_heuristica in enumerate(heuristicas):
         eje_tiempo.bar(
-            [
-                posicion + indice * ancho_barra
-                for posicion in posiciones
-            ],
+            [posicion + indice * ancho_barra for posicion in posiciones],
             [fila[indice] for fila in tiempos],
             width=ancho_barra,
             label=nombre_heuristica
@@ -1573,10 +1655,7 @@ def generar_graficas(tamaño):
     eje_pasos.set_facecolor(color_fondo)
     for indice, nombre_heuristica in enumerate(heuristicas):
         eje_pasos.bar(
-            [
-                posicion + indice * ancho_barra
-                for posicion in posiciones
-            ],
+            [posicion + indice * ancho_barra for posicion in posiciones],
             [fila[indice] for fila in pasos],
             width=ancho_barra,
             label=nombre_heuristica
@@ -1610,7 +1689,8 @@ def generar_graficas(tamaño):
     )
     lienzo.draw()
     lienzo.get_tk_widget().pack(fill="both", expand=True)
-    
+
+
 # ==============================================================
 # INICIO
 # ==============================================================
