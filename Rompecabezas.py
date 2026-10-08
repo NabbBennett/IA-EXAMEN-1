@@ -5,6 +5,7 @@ from tkinter import messagebox
 import threading
 import time
 import csv
+import json
 import heapq
 from collections import deque
 from pathlib import Path
@@ -151,27 +152,97 @@ def animar_titulo(paso):
 
 def mostrar_datos(n, inicio, final):
     limpiar_widgets_datos()
+    boton_regresar.place_forget()
+    boton_continuar.place_forget()
 
+    area_desplazable, contenedor = crear_area_desplazable(ventana)
+    area_desplazable.place(
+        relx=0.5,
+        rely=0.02,
+        anchor="n",
+        relwidth=0.95,
+        relheight=0.96
+    )
+    widgets_datos.append(area_desplazable)
+
+    contenedor.grid_columnconfigure(0, weight=1)
+    contenedor.grid_columnconfigure(1, weight=1)
     label_tam = ctk.CTkLabel(
-        master=ventana,
+        master=contenedor,
         text=f"Matriz de {n} x {n}",
         font=texto,
         text_color="#3a3d81",
         fg_color="transparent"
     )
-    label_tam.place(relx=0.5, rely=0.25, anchor="center")
-    widgets_datos.append(label_tam)
-
-    contenedor = ctk.CTkFrame(master=ventana, fg_color="transparent")
-    contenedor.place(relx=0.5, rely=0.25, anchor="n", y=60)
-    widgets_datos.append(contenedor)
+    label_tam.grid(row=0, column=0, columnspan=2, pady=(20, 25))
 
     dibujar_matriz(contenedor, inicio, titulo_texto="Inicio", columna=0)
     dibujar_matriz(contenedor, final, titulo_texto="Final", columna=1)
 
-    boton_continuar.configure(command=lambda: continuar())
-    boton_regresar.place(relx=0.42, rely=0.90, anchor="center")
-    boton_continuar.place(relx=0.58, rely=0.90, anchor="center")
+    ctk.CTkButton(
+        contenedor,
+        text="Regresar",
+        font=botones,
+        width=140,
+        height=40,
+        corner_radius=20,
+        fg_color="#b0bfe9",
+        hover_color="#8fa3dd",
+        text_color="#3a3d81",
+        command=retroceder
+    ).grid(row=2, column=0, pady=(30, 20))
+    ctk.CTkButton(
+        contenedor,
+        text="Continuar",
+        font=botones,
+        width=140,
+        height=40,
+        corner_radius=20,
+        fg_color="#3a3d81",
+        hover_color="#b0bfe9",
+        text_color="#ffffff",
+        command=continuar
+    ).grid(row=2, column=1, pady=(30, 20))
+
+
+def crear_area_desplazable(parent):
+    area = ctk.CTkFrame(parent, fg_color="transparent")
+    area.grid_rowconfigure(0, weight=1)
+    area.grid_columnconfigure(0, weight=1)
+
+    lienzo = tk.Canvas(
+        area,
+        bg="#e6eafd",
+        highlightthickness=0,
+        bd=0
+    )
+    barra_vertical = ctk.CTkScrollbar(
+        area,
+        orientation="vertical",
+        command=lienzo.yview
+    )
+    barra_horizontal = ctk.CTkScrollbar(
+        area,
+        orientation="horizontal",
+        command=lienzo.xview
+    )
+    lienzo.configure(
+        yscrollcommand=barra_vertical.set,
+        xscrollcommand=barra_horizontal.set
+    )
+
+    lienzo.grid(row=0, column=0, sticky="nsew")
+    barra_vertical.grid(row=0, column=1, sticky="ns")
+    barra_horizontal.grid(row=1, column=0, sticky="ew")
+
+    contenido = ctk.CTkFrame(lienzo, fg_color="transparent")
+    lienzo.create_window((0, 0), window=contenido, anchor="nw")
+    contenido.bind(
+        "<Configure>",
+        lambda evento: lienzo.configure(scrollregion=lienzo.bbox("all"))
+    )
+
+    return area, contenido
 
 
 def dibujar_matriz(parent, matriz, titulo_texto, columna):
@@ -189,7 +260,7 @@ def dibujar_matriz(parent, matriz, titulo_texto, columna):
     )
 
     marco = ctk.CTkFrame(parent, fg_color="transparent")
-    marco.grid(row=0, column=columna, padx=40)
+    marco.grid(row=1, column=columna, padx=40)
 
     ctk.CTkLabel(
         master=marco,
@@ -257,7 +328,7 @@ def continuar():
 
 
 # ==============================================================
-# HEURISTICAS  (5 en total)
+# HEURISTICAS 
 # ==============================================================
 
 def heuristica_manhattan(estado, meta):
@@ -332,7 +403,7 @@ def heuristica_manhattan_lc(estado, meta):
     return heuristica_manhattan(estado, meta) + conflicto_lineal(estado, meta)
 
 
-# ---------- Walking Distance (Heurística 2 - nueva) ----------
+# ---------- Walking Distance (Heurística 2) ----------
 
 def _tabla_walking_distance(n, meta, por_columnas=False):
     if n > 4:
@@ -653,13 +724,17 @@ def es_resoluble(inicio, meta):
 # BUSQUEDAS
 # ==============================================================
 
+class HeuristicaNoOptima(Exception):
+    """Indica que una heurística superó el límite de nodos permitido."""
+
+
 def _notificar_progreso(callback, nodos, iteracion, umbral):
     if callback and nodos % 100000 == 0:
         callback(nodos, iteracion, umbral)
 
 
 def ida_estrella(inicio, meta, funcion_heuristica=heuristica_manhattan_lc,
-                 callback_progreso=None):
+                 callback_progreso=None, limite_nodos=None):
     inicio_ser = serializar(inicio)
     meta_ser = serializar(meta)
 
@@ -683,7 +758,8 @@ def ida_estrella(inicio, meta, funcion_heuristica=heuristica_manhattan_lc,
             meta_ser=meta_ser,
             contador=iteraciones,
             tt=tt,
-            funcion_heuristica=funcion_heuristica
+            funcion_heuristica=funcion_heuristica,
+            limite_nodos=limite_nodos
         )
 
         if resultado[0] == "ENCONTRADO":
@@ -696,7 +772,7 @@ def ida_estrella(inicio, meta, funcion_heuristica=heuristica_manhattan_lc,
 
 
 def _buscar_con_umbral(camino, camino_set, g, umbral, meta, meta_ser,
-                       contador, tt, funcion_heuristica):
+                       contador, tt, funcion_heuristica, limite_nodos=None):
 
     estado = camino[-1]
     estado_ser = serializar(estado)
@@ -731,10 +807,12 @@ def _buscar_con_umbral(camino, camino_set, g, umbral, meta, meta_ser,
         camino.append(vecino)
         camino_set.add(vecino_ser)
         contador[0] += 1
+        if limite_nodos is not None and contador[0] > limite_nodos:
+            raise HeuristicaNoOptima
 
         resultado, _ = _buscar_con_umbral(
             camino, camino_set, g + 1, umbral, meta, meta_ser,
-            contador, tt, funcion_heuristica
+            contador, tt, funcion_heuristica, limite_nodos
         )
 
         if resultado == "ENCONTRADO":
@@ -887,12 +965,13 @@ def weighted_ida(inicio, meta, funcion_heuristica=heuristica_manhattan_lc,
 # ==============================================================
 
 def _crear_busqueda_ida(funcion_heuristica):
-    def ejecutar(inicio, meta, callback_progreso=None):
+    def ejecutar(inicio, meta, callback_progreso=None, limite_nodos=None):
         return ida_estrella(
             inicio,
             meta,
             funcion_heuristica=funcion_heuristica,
-            callback_progreso=callback_progreso
+            callback_progreso=callback_progreso,
+            limite_nodos=limite_nodos
         )
     return ejecutar
 
@@ -919,34 +998,90 @@ ALGORITMOS = {
 # COMPARACION DE HEURISTICAS
 # ==============================================================
 
-def comparar_heuristicas(inicio, final, actualizar_estado=None):
+def comparar_heuristicas(
+    inicio,
+    final,
+    tamaño,
+    archivo_entrada,
+    actualizar_estado=None,
+    detener_si_supera_anterior=True
+):
     resultados = []
+    mejor_indice = None
+    mejor_clave = (float("inf"), float("inf"))
+    id_ejecucion = time.time_ns()
+    nodos_heuristica_anterior = None
+
     for nombre, funcion in HEURISTICAS.items():
         if actualizar_estado:
             actualizar_estado(nombre, "Trabajando...", None, None)
         t0 = time.time()
-        camino, nodos = funcion(
-            inicio,
-            final,
-            callback_progreso=(
-                lambda nodos_actuales, iteracion, umbral,
-                nombre_actual=nombre: actualizar_estado(
-                    nombre_actual,
-                    "Trabajando...",
-                    iteracion,
-                    nodos_actuales
+        try:
+            camino, nodos = funcion(
+                inicio,
+                final,
+                callback_progreso=(
+                    lambda nodos_actuales, iteracion, umbral,
+                    nombre_actual=nombre: actualizar_estado(
+                        nombre_actual,
+                        "Trabajando...",
+                        iteracion,
+                        nodos_actuales
+                    )
+                ) if actualizar_estado else None,
+                limite_nodos=(
+                    nodos_heuristica_anterior
+                    if detener_si_supera_anterior
+                    else None
                 )
-            ) if actualizar_estado else None
-        )
-        estado_final = "Finalizado"
-        resultados.append({
+            )
+            estado_final = "Finalizado"
+        except HeuristicaNoOptima:
+            camino = None
+            nodos = nodos_heuristica_anterior + 1
+            estado_final = "No óptima"
+        tiempo = time.time() - t0
+        pasos = len(camino) - 1 if camino else None
+        resultado_temporal = {
             "nombre": nombre,
             "f_inicial": heuristica_manhattan_lc(inicio, final),
             "nodos": nodos,
-            "tiempo": time.time() - t0,
+            "tiempo": tiempo,
             "camino": camino,
+            "pasos": pasos,
+        }
+        guardar_resultado_temporal(
+            resultado_temporal,
+            tamaño,
+            archivo_entrada,
+            id_ejecucion
+        )
+
+        clave_actual = (nodos, tiempo) if camino is not None else (
+            float("inf"),
+            float("inf")
+        )
+        resumen = {
+            "nombre": nombre,
+            "f_inicial": resultado_temporal["f_inicial"],
+            "nodos": nodos,
+            "tiempo": tiempo,
+            "pasos": pasos,
+            "camino": None,
             "estado": estado_final,
-        })
+        }
+        if clave_actual < mejor_clave:
+            if mejor_indice is not None:
+                resultados[mejor_indice]["camino"] = None
+            resumen["camino"] = camino
+            mejor_indice = len(resultados)
+            mejor_clave = clave_actual
+        resultados.append(resumen)
+        nodos_heuristica_anterior = nodos
+
+        del resultado_temporal
+        if camino is not None and mejor_indice != len(resultados) - 1:
+            del camino
         if actualizar_estado:
             actualizar_estado(nombre, estado_final, None, nodos)
     return resultados
@@ -1041,9 +1176,12 @@ def calcular_heuristica(n, inicio, final):
                          f"Nodos expandidos: {nodos or 0}"
                 )
             else:
+                color_estado = (
+                    "#c0392b" if estado == "No óptima" else "#27803b"
+                )
                 etiquetas_estado[nombre].configure(
                     text=f"{nombre}: {estado} | Nodos: {nodos}",
-                    text_color="#27803b"
+                    text_color=color_estado
                 )
 
         ventana.after(0, actualizar)
@@ -1052,6 +1190,8 @@ def calcular_heuristica(n, inicio, final):
         resultados = comparar_heuristicas(
             inicio,
             final,
+            n,
+            getattr(ventana, "archivo_actual", "archivo_sin_nombre.txt"),
             actualizar_estado=actualizar_estado
         )
         ventana.after(0, lambda: mostrar_resultado(
@@ -1063,11 +1203,6 @@ def calcular_heuristica(n, inicio, final):
 
 def mostrar_resultado(n, inicio, final, resultados):
     limpiar_widgets_datos()
-    guardar_resultados(
-        resultados,
-        n,
-        getattr(ventana, "archivo_actual", "archivo_sin_nombre.txt")
-    )
 
     resultados_validos = [r for r in resultados if r["camino"] is not None]
     if not resultados_validos:
@@ -1095,11 +1230,14 @@ def mostrar_resultado(n, inicio, final, resultados):
     ]
     for resultado in resultados:
         pasos = (
-            str(len(resultado["camino"]) - 1)
-            if resultado["camino"] is not None else "SIN SOLUCION"
+            str(resultado["pasos"])
+            if resultado["pasos"] is not None else "SIN SOLUCION"
         )
+        nombre_mostrado = resultado["nombre"]
+        if resultado["estado"] == "No óptima":
+            nombre_mostrado += " (NO ÓPTIMA)"
         lineas.append(
-            f"{resultado['nombre'][:34]:34} "
+            f"{nombre_mostrado[:34]:34} "
             f"{resultado['f_inicial']:>9} "
             f"{resultado['nodos']:>8} "
             f"{resultado['tiempo']:>8.2f} s "
@@ -1148,19 +1286,25 @@ def animar_solucion(n, camino):
 
     ventana.animacion_activa = True
 
+    area_desplazable, contenedor = crear_area_desplazable(ventana)
+    area_desplazable.place(
+        relx=0.5,
+        rely=0.02,
+        anchor="n",
+        relwidth=0.95,
+        relheight=0.96
+    )
+    widgets_datos.append(area_desplazable)
+    contenedor.grid_columnconfigure(0, weight=1)
+
     label = ctk.CTkLabel(
-        master=ventana,
+        master=contenedor,
         text="Solucion paso a paso",
         font=subtitulos,
         text_color="#3a3d81",
         fg_color="transparent"
     )
-    label.place(relx=0.5, rely=0.08, anchor="center")
-    widgets_datos.append(label)
-
-    contenedor = ctk.CTkFrame(master=ventana, fg_color="transparent")
-    contenedor.place(relx=0.5, rely=0.15, anchor="n")
-    widgets_datos.append(contenedor)
+    label.grid(row=0, column=0, pady=(20, 25))
 
     lado = max(40, min(80, 360 // n))
     pad = max(3, lado // 12)
@@ -1171,7 +1315,7 @@ def animar_solucion(n, camino):
     )
 
     marco = ctk.CTkFrame(contenedor, fg_color="transparent")
-    marco.pack()
+    marco.grid(row=1, column=0)
 
     celdas = []
     for i in range(n):
@@ -1192,17 +1336,16 @@ def animar_solucion(n, camino):
         celdas.append(fila_celdas)
 
     label_paso = ctk.CTkLabel(
-        master=ventana,
+        master=contenedor,
         text=f"Paso 0 de {len(camino) - 1}",
         font=texto,
         text_color="#3a3d81",
         fg_color="transparent"
     )
-    label_paso.place(relx=0.5, rely=0.75, anchor="center")
-    widgets_datos.append(label_paso)
+    label_paso.grid(row=2, column=0, pady=(25, 15))
 
     boton_saltar = ctk.CTkButton(
-        master=ventana,
+        master=contenedor,
         text="Ver resultado final",
         font=botones,
         width=220,
@@ -1213,8 +1356,7 @@ def animar_solucion(n, camino):
         text_color="#3a3d81",
         command=lambda: detener_y_mostrar(n, camino)
     )
-    boton_saltar.place(relx=0.5, rely=0.85, anchor="center")
-    widgets_datos.append(boton_saltar)
+    boton_saltar.grid(row=3, column=0, pady=(0, 25))
 
     def actualizar_paso(idx):
         if not getattr(ventana, "animacion_activa", False):
@@ -1351,8 +1493,7 @@ def mostrar_estadisticas(n, camino, resultados=None):
 
     estadisticas = []
     for resultado in resultados:
-        camino_algoritmo = resultado["camino"]
-        if camino_algoritmo is None:
+        if resultado["pasos"] is None:
             estadisticas.append(
                 (
                     resultado["nombre"],
@@ -1365,7 +1506,7 @@ def mostrar_estadisticas(n, camino, resultados=None):
             )
             continue
 
-        pasos_algoritmo = len(camino_algoritmo) - 1
+        pasos_algoritmo = resultado["pasos"]
         estadisticas.append((
             resultado["nombre"],
             str(resultado["f_inicial"]),
@@ -1466,27 +1607,48 @@ def obtener_carpeta_resultados(tamaño):
 
 def guardar_resultados(resultados, tamaño, archivo_entrada):
     archivo = obtener_carpeta_resultados(tamaño) / "resultados.txt"
+    id_ejecucion = time.time_ns()
     with open(archivo, "a", newline="", encoding="utf-8") as f:
         escritor = csv.writer(f)
-        id_ejecucion = time.time_ns()
         for resultado in resultados:
-            nombre = resultado["nombre"]
-            f_inicial = resultado["f_inicial"]
-            nodos = resultado["nodos"]
-            tiempo = resultado["tiempo"]
-            pasos = (
-                len(resultado["camino"]) - 1
-                if resultado["camino"] else "SIN SOLUCION"
+            escribir_resultado(
+                escritor,
+                resultado,
+                archivo_entrada,
+                id_ejecucion
             )
-            escritor.writerow([
-                nombre,
-                f_inicial,
-                nodos,
-                tiempo,
-                pasos,
-                id_ejecucion,
-                archivo_entrada
-            ])
+
+
+def guardar_resultado_temporal(
+    resultado,
+    tamaño,
+    archivo_entrada,
+    id_ejecucion
+):
+    archivo = obtener_carpeta_resultados(tamaño) / "resultados.txt"
+    with open(archivo, "a", newline="", encoding="utf-8") as f:
+        escritor = csv.writer(f)
+        escribir_resultado(
+            escritor,
+            resultado,
+            archivo_entrada,
+            id_ejecucion
+        )
+
+
+def escribir_resultado(escritor, resultado, archivo_entrada, id_ejecucion):
+    ruta = resultado.get("camino")
+    escritor.writerow([
+        resultado["nombre"],
+        resultado["f_inicial"],
+        resultado["nodos"],
+        resultado["tiempo"],
+        resultado.get("pasos")
+        if resultado.get("pasos") is not None else "SIN SOLUCION",
+        id_ejecucion,
+        archivo_entrada,
+        json.dumps(ruta, separators=(",", ":")) if ruta else "",
+    ])
 
 
 def leer_resultados(archivo="resultados.txt"):
@@ -1496,7 +1658,7 @@ def leer_resultados(archivo="resultados.txt"):
         for numero_linea, fila in enumerate(lector, start=1):
             if not fila:
                 continue
-            if len(fila) not in (5, 6, 7):
+            if len(fila) not in (5, 6, 7, 8):
                 raise ValueError(
                     f"La línea {numero_linea} de {archivo} debe tener "
                     "5, 6 o 7 columnas."
